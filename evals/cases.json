@@ -1,0 +1,29 @@
+[
+  {
+    "id": "volatile-conservative",
+    "segment_id": "steady-planner",
+    "objective": "在市场波动加剧时提供稳健的资产配置教育",
+    "market_signal": "权益市场近五日波动显著放大，客户对回撤的咨询增加",
+    "must_cite": ["CMP-001", "MKT-014"],
+    "max_risk_level": 2,
+    "expected_compliance": "approved"
+  },
+  {
+    "id": "growth-reengagement",
+    "segment_id": "growth-explorer",
+    "objective": "重新激活沉默的成长型客户",
+    "market_signal": "宽基指数成交活跃度回升，但趋势仍存在不确定性",
+    "must_cite": ["CMP-001", "SUT-002"],
+    "max_risk_level": 4,
+    "expected_compliance": "approved"
+  },
+  {
+    "id": "professional-education",
+    "segment_id": "pro-allocator",
+    "objective": "解释多资产组合在震荡市场的作用",
+    "market_signal": "股债相关性阶段性变化，海外市场波动上升",
+    "must_cite": ["MKT-014"],
+    "max_risk_level": 5,
+    "expected_compliance": "approved"
+  }
+]

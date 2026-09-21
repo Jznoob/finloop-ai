@@ -1,0 +1,17 @@
+services:
+  finloop:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      FINLOOP_DATABASE_PATH: /app/runtime/finloop.db
+    volumes:
+      - finloop-data:/app/runtime
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  finloop-data:
