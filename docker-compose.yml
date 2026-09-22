@@ -2,7 +2,7 @@ services:
   finloop:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       FINLOOP_DATABASE_PATH: /app/runtime/finloop.db
     volumes:

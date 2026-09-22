@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.api.studio import studio_router
 from app.catalog import SEGMENTS
+from app.core.jobs import JobManager
 from app.core.runtime import AgentRuntime
 from app.db import Database
 from app.evals import evaluate
 from app.models import (
-    EvaluationReport,
     FeedbackRequest,
     KnowledgeSearchResult,
     RunRequest,
@@ -16,8 +17,13 @@ from app.models import (
 from app.services.retrieval import HybridRetriever
 
 
-def build_router(database: Database, runtime: AgentRuntime) -> APIRouter:
+def build_router(
+    database: Database,
+    runtime: AgentRuntime,
+    jobs: JobManager | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api")
+    router.include_router(studio_router(database, runtime, jobs or JobManager(database, runtime)))
     retriever = HybridRetriever(database)
 
     @router.get("/health")
@@ -83,18 +89,22 @@ def build_router(database: Database, runtime: AgentRuntime) -> APIRouter:
             )
         except KeyError as error:
             raise HTTPException(status_code=404, detail="运行记录不存在") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         return {"saved": True, "run_id": feedback.run_id}
 
-    @router.post("/evals/run", response_model=EvaluationReport)
-    async def run_evaluations() -> EvaluationReport:
-        return await evaluate(runtime)
+    @router.post("/evals/run")
+    async def run_evaluations() -> dict:
+        report = await evaluate(runtime)
+        database.save_report(report["id"], "evaluation", report)
+        return report
 
     @router.get("/architecture")
     async def architecture() -> dict:
         return {
             "pattern": "event-driven typed workflow",
             "memory": ["episodic", "semantic", "procedural"],
-            "retrieval": "lexical + hashed semantic rank fusion",
+            "retrieval": "paragraph BM25 + explicit policy pins",
             "safety": [
                 "PII redaction",
                 "suitability gate",

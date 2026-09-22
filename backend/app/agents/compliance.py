@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import re
+
 from app.models import Citation, ComplianceResult, Product, Segment
 
 
 class ComplianceAgent:
     name = "compliance-agent"
     replacements = {
-        "保本": "重视本金波动控制",
+        "保本": "本金可能发生损失",
         "稳赚": "存在收益与损失的可能",
         "零风险": "风险相对可控但不等于无风险",
         "确定上涨": "存在上涨或下跌的多种情景",
@@ -29,9 +31,7 @@ class ComplianceAgent:
                 "rule": "CMP-001 / 禁止收益承诺与内幕暗示",
                 "passed": not matched_terms,
                 "detail": (
-                    "未发现禁用词"
-                    if not matched_terms
-                    else f"命中：{', '.join(matched_terms)}"
+                    "未发现禁用词" if not matched_terms else f"命中：{', '.join(matched_terms)}"
                 ),
             }
         )
@@ -50,7 +50,7 @@ class ComplianceAgent:
         if not suitable:
             violations.append("产品风险等级高于客群风险承受等级")
 
-        has_risk = "风险提示" in revised and any(risk in revised for risk in product.risks)
+        has_risk = "风险提示" in revised and all(risk in revised for risk in product.risks)
         checks.append(
             {
                 "rule": "CMP-001 / 风险披露",
@@ -65,12 +65,18 @@ class ComplianceAgent:
                 f"产品可能面临{'、'.join(product.risks)}，请审慎决策。"
             )
 
-        has_sources = len(citations) >= 2
+        known_ids = {citation.document_id for citation in citations}
+        anchors = set(re.findall(r"\[([A-Z][A-Z0-9-]+)\]", copy))
+        has_sources = {"CMP-001", "SUT-002"} <= known_ids
+        fabricated = anchors - known_ids
+        if fabricated:
+            violations.append(f"无法核验的引用：{', '.join(sorted(fabricated))}")
+            has_sources = False
         checks.append(
             {
                 "rule": "AUD-001 / 决策可追溯",
                 "passed": has_sources,
-                "detail": f"关联 {len(citations)} 条知识依据",
+                "detail": f"去重后 {len(known_ids)} 条依据；强制检查 CMP-001 与 SUT-002",
             }
         )
         if not has_sources:

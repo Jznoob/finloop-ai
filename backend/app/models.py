@@ -35,6 +35,9 @@ class Citation(BaseModel):
     source: str
     excerpt: str
     score: float = Field(ge=0, le=1)
+    content_hash: str = ""
+    effective_date: str = ""
+    retrieval_reason: str = "query"
 
 
 class MemoryItem(BaseModel):
@@ -61,7 +64,7 @@ class AgentArtifact(BaseModel):
     summary: str
     data: dict[str, Any] = Field(default_factory=dict)
     citations: list[Citation] = Field(default_factory=list)
-    confidence: float = Field(ge=0, le=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
 
 
 class PipelineEvent(BaseModel):
@@ -97,7 +100,9 @@ class RunRequest(BaseModel):
         min_length=4,
         max_length=500,
     )
-    dry_run: bool = True
+    dry_run: Literal[True] = True
+    seed: int = Field(default=42, ge=0, le=2**31 - 1)
+    variant: Literal["auto", "clarity", "evidence", "scenario"] = "auto"
 
 
 class ComplianceResult(BaseModel):
@@ -137,6 +142,8 @@ class RunResult(BaseModel):
     context_trace: ContextTrace
     memory_updates: list[MemoryItem]
     model_provider: str
+    evidence_passport: dict[str, Any] = Field(default_factory=dict)
+    model_calls: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FeedbackRequest(BaseModel):
@@ -149,7 +156,7 @@ class FeedbackRequest(BaseModel):
 class KnowledgeSearchResult(BaseModel):
     query: str
     results: list[Citation]
-    strategy: str = "lexical + hashed semantic fusion"
+    strategy: str = "paragraph BM25 + document max-pooling (no embeddings)"
 
 
 class EvaluationCaseResult(BaseModel):

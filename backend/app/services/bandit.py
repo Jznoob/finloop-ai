@@ -6,7 +6,7 @@ from app.db import Database
 
 
 class BanditService:
-    """UCB1 creative selector that learns from simulated and explicit feedback."""
+    """Smoothed UCB-style creative preference ranking, updated only by reviews."""
 
     def __init__(self, database: Database) -> None:
         self.database = database

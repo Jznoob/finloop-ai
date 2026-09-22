@@ -13,6 +13,9 @@ export type Citation = {
   source: string;
   excerpt: string;
   score: number;
+  content_hash?: string;
+  effective_date?: string;
+  retrieval_reason?: string;
 };
 
 export type PipelineEvent = {
@@ -32,7 +35,7 @@ export type AgentArtifact = {
   summary: string;
   data: Record<string, unknown>;
   citations: Citation[];
-  confidence: number;
+  confidence: number | null;
 };
 
 export type RunResult = {
@@ -45,6 +48,8 @@ export type RunResult = {
     objective: string;
     market_signal: string;
     dry_run: boolean;
+    seed?: number;
+    variant?: string;
   };
   segment: Segment;
   selected_product: {
@@ -93,7 +98,47 @@ export type RunResult = {
     importance: number;
   }>;
   model_provider: string;
+  model_calls?: Array<{outcome: string; configured_provider: string; latency_ms: number}>;
+  evidence_passport?: Passport;
 };
+
+export type Document = {
+  id: string; title: string; category: string; source: string;
+  effective_date: string; content: string; content_hash: string;
+};
+export type Passport = {
+  version: string; policy_version: string; retrieval: string; seed: number;
+  context_sha256: string; input_sha256: string; sources: Document[]; memory_ids: string[];
+  boundaries: string;
+  verification?: Array<{id: string; snapshot_integrity: boolean; current_matches: boolean}>;
+};
+export type Job = {
+  id: string; status: "queued" | "running" | "completed" | "blocked" | "failed" | "interrupted";
+  run_id: string | null; attempts: number; error: string | null;
+  created_at: string; updated_at: string; request: RunResult["request"]; events?: PipelineEvent[];
+  history?: Array<{attempt: number; run_id: string; status: string; created_at: string; events: PipelineEvent[]}>;
+};
+export type Memory = {
+  id: string; namespace: string; kind: string; content: string; importance: number;
+  active: number; created_at: string; metadata: Record<string, unknown>; duplicate_count: number;
+};
+export type Evaluation = {
+  id: string; total: number; passed: number; pass_rate: number; corpus_documents: number;
+  latency_ms: number; scope: string; created_at: string; learning_writes: number;
+  retrieval_metrics: {recall_at_2: number; precision_at_2: number; mrr_at_2: number};
+  cases: Array<{case_id: string; category: string; passed: boolean; detail: string}>;
+};
+export type Experiment = {
+  id: string; cohort_key: string; notice: string; method: string; learning_writes: number;
+  request: {run_id: string; seed: number; sample_size: number; stress: number; fatigue: number};
+  assumptions: Record<string, unknown>;
+  variants: Array<{
+    variant: string; delivered: number; opened: number; converted: number;
+    audience_conversion_rate: number; interval95: number[]; paired_interval95: number[];
+    difference_vs_clarity: number; conclusion: string;
+  }>;
+};
+export type Report<T> = {id: string; kind: string; created_at: string; payload: T};
 
 export type Dashboard = {
   metrics: {

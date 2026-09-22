@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from app.db import Database
 from app.models import MemoryItem
@@ -22,16 +22,19 @@ class MemoryService:
         content: str,
         importance: float,
         metadata: dict | None = None,
+        persist: bool = True,
     ) -> MemoryItem:
+        identity = f"{namespace}:{kind}:{content}"
         memory = MemoryItem(
-            id=f"mem_{uuid4().hex[:12]}",
+            id=f"mem_{hashlib.sha256(identity.encode()).hexdigest()[:20]}",
             namespace=namespace,
             kind=kind,
             content=content,
             importance=importance,
             metadata=metadata or {},
         )
-        self.database.put_memory(memory.model_dump())
+        if persist:
+            self.database.put_memory(memory.model_dump())
         return memory
 
     def recall(self, namespace: str, query: str, limit: int = 5) -> list[MemoryItem]:

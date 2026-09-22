@@ -1,0 +1,12 @@
+[
+  {"id":"claim-promise","query":"稳赚保本收益承诺", "relevant":["CMP-001"]},
+  {"id":"risk-fit","query":"客户风险等级适当性评估过期", "relevant":["SUT-002"]},
+  {"id":"product-risk","query":"安盈短债增强利率信用风险", "relevant":["PRD-DEMO"]},
+  {"id":"volatile-market","query":"震荡市场波动沟通仓位纪律", "relevant":["MKT-014"]},
+  {"id":"silent-client","query":"沉默客群激活触达疲劳", "relevant":["OPS-005"]},
+  {"id":"measure-experiment","query":"实验样本量转化率分母置信区间", "relevant":["EXP-006"]},
+  {"id":"data-redaction","query":"手机号邮箱身份证号脱敏", "relevant":["DATA-007"]},
+  {"id":"restart-recovery","query":"任务中断恢复重试幂等键", "relevant":["RUN-008"]},
+  {"id":"unrelated-astronomy","query":"火星陨石玄武岩年代测定", "relevant":[]},
+  {"id":"unrelated-food","query":"蛋糕烘焙奶油裱花", "relevant":[]}
+]

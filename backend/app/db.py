@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings, settings
+from app.services.context import ContextBuilder
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -81,6 +82,50 @@ CREATE TABLE IF NOT EXISTS feedback (
     note TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT UNIQUE NOT NULL,
+    request_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    run_id TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id),
+    endorsed INTEGER NOT NULL,
+    rating INTEGER NOT NULL,
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS job_attempts (
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    attempt INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(job_id, attempt)
+);
+CREATE TABLE IF NOT EXISTS review_arms (
+    arm TEXT PRIMARY KEY,
+    alpha REAL NOT NULL DEFAULT 1,
+    beta REAL NOT NULL DEFAULT 1,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    conversions INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_flags (
+    memory_id TEXT PRIMARY KEY REFERENCES memories(id),
+    active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -97,6 +142,7 @@ class Database:
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=10)
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
         try:
             yield connection
@@ -108,6 +154,10 @@ class Database:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             for arm in ("clarity", "evidence", "scenario"):
+                connection.execute(
+                    "INSERT OR IGNORE INTO review_arms (arm, updated_at) VALUES (?, ?)",
+                    (arm, now_iso()),
+                )
                 connection.execute(
                     """INSERT OR IGNORE INTO bandit_arms
                     (arm, alpha, beta, impressions, conversions, updated_at)
@@ -216,7 +266,8 @@ class Database:
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM runs WHERE result_json IS NOT NULL ORDER BY created_at DESC LIMIT ?",
+                (limit,),
             ).fetchall()
         results = []
         for row in rows:
@@ -252,9 +303,11 @@ class Database:
             created_at = created_at.isoformat()
         with self.connect() as connection:
             connection.execute(
-                """INSERT OR REPLACE INTO memories
+                """INSERT INTO memories
                 (id, namespace, kind, content, importance, metadata_json, created_at, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET importance=excluded.importance,
+                metadata_json=excluded.metadata_json, last_accessed=excluded.last_accessed""",
                 (
                     memory["id"],
                     memory["namespace"],
@@ -270,8 +323,12 @@ class Database:
     def list_memories(self, namespace: str, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                """SELECT * FROM memories WHERE namespace IN (?, 'global')
-                ORDER BY importance DESC, created_at DESC LIMIT ?""",
+                """SELECT * FROM (
+                SELECT m.*, ROW_NUMBER() OVER (
+                  PARTITION BY namespace,kind,content ORDER BY created_at DESC,id
+                ) AS duplicate_rank FROM memories m WHERE namespace IN (?, 'global')
+                AND id NOT IN (SELECT memory_id FROM memory_flags WHERE active=0))
+                WHERE duplicate_rank=1 ORDER BY importance DESC, created_at DESC LIMIT ?""",
                 (namespace, limit),
             ).fetchall()
         return [
@@ -289,13 +346,13 @@ class Database:
 
     def get_bandit_arms(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM bandit_arms ORDER BY arm").fetchall()
+            rows = connection.execute("SELECT * FROM review_arms ORDER BY arm").fetchall()
         return [dict(row) for row in rows]
 
     def update_bandit(self, arm: str, converted: bool) -> None:
         with self.connect() as connection:
             connection.execute(
-                """UPDATE bandit_arms SET alpha=alpha+?, beta=beta+?,
+                """UPDATE review_arms SET alpha=alpha+?, beta=beta+?,
                 impressions=impressions+1, conversions=conversions+?, updated_at=? WHERE arm=?""",
                 (int(converted), int(not converted), int(converted), now_iso(), arm),
             )
@@ -304,15 +361,27 @@ class Database:
         run = self.get_run(run_id)
         if run is None:
             raise KeyError(run_id)
-        with self.connect() as connection:
-            connection.execute(
-                """INSERT INTO feedback (run_id, converted, rating, note, created_at)
-                VALUES (?, ?, ?, ?, ?)""",
-                (run_id, int(converted), rating, note, now_iso()),
-            )
         execution = run.get("execution") or {}
-        if execution.get("variant"):
-            self.update_bandit(execution["variant"], converted)
+        if not execution.get("variant"):
+            raise ValueError("只有已完成仿真执行的运行可以复核")
+        with self.connect() as connection:
+            changed = connection.execute(
+                "INSERT OR IGNORE INTO reviews VALUES (?, ?, ?, ?, ?)",
+                (run_id, int(converted), rating, ContextBuilder.redact(note)[0], now_iso()),
+            ).rowcount
+            if not changed:
+                raise ValueError("该运行已经复核，重复提交不会改变策略权重")
+            connection.execute(
+                "UPDATE review_arms SET alpha=alpha+?, beta=beta+?, "
+                "impressions=impressions+1, conversions=conversions+?, updated_at=? WHERE arm=?",
+                (
+                    int(converted),
+                    int(not converted),
+                    int(converted),
+                    now_iso(),
+                    execution["variant"],
+                ),
+            )
 
     def dashboard_metrics(self) -> dict[str, Any]:
         with self.connect() as connection:
@@ -324,10 +393,10 @@ class Database:
                 FROM runs WHERE status IN ('completed','blocked')"""
             ).fetchone()
             feedback = connection.execute(
-                "SELECT COUNT(*) AS total, AVG(rating) AS rating FROM feedback"
+                "SELECT COUNT(*) AS total, AVG(rating) AS rating FROM reviews"
             ).fetchone()
             memory_count = connection.execute(
-                "SELECT COUNT(*) AS total FROM memories"
+                "SELECT COUNT(*) FROM (SELECT 1 FROM memories GROUP BY namespace,kind,content)"
             ).fetchone()[0]
         total = int(run_stats["total"] or 0)
         safe = int(run_stats["safe"] or 0)
@@ -340,3 +409,198 @@ class Database:
             "memory_count": memory_count,
             "bandit_arms": self.get_bandit_arms(),
         }
+
+    def submit_job(self, job_id: str, key: str, request: dict) -> dict:
+        payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO jobs "
+                "(id,idempotency_key,request_json,created_at,updated_at) VALUES (?,?,?,?,?)",
+                (job_id, key, payload, now_iso(), now_iso()),
+            )
+            row = dict(
+                connection.execute("SELECT * FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
+            )
+        if row["request_json"] != payload:
+            raise ValueError("同一幂等键对应了不同输入，请重新创建任务")
+        return self.job_view(row)
+
+    @staticmethod
+    def job_view(row: dict) -> dict:
+        row["request"] = json.loads(row.pop("request_json"))
+        row.pop("idempotency_key", None)
+        return row
+
+    def get_job(self, job_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return self.job_view(dict(row)) if row else None
+
+    def list_jobs(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100"
+            ).fetchall()
+        return [self.job_view(dict(row)) for row in rows]
+
+    def claim_job(self, job_id: str, run_id: str) -> bool:
+        with self.connect() as connection:
+            claimed = bool(
+                connection.execute(
+                    "UPDATE jobs SET status='running',run_id=?,attempts=attempts+1,"
+                    "error=NULL,updated_at=? WHERE id=? AND status='queued'",
+                    (run_id, now_iso(), job_id),
+                ).rowcount
+            )
+            if claimed:
+                connection.execute(
+                    "INSERT INTO job_attempts SELECT id,attempts,run_id,updated_at "
+                    "FROM jobs WHERE id=?",
+                    (job_id,),
+                )
+            return claimed
+
+    def job_attempts(self, job_id: str) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT a.*,COALESCE(r.status,'running') AS status "
+                "FROM job_attempts a LEFT JOIN runs r ON r.id=a.run_id "
+                "WHERE a.job_id=? ORDER BY a.attempt DESC",
+                (job_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def queued_job_ids(self) -> list[str]:
+        with self.connect() as connection:
+            return [
+                row[0]
+                for row in connection.execute(
+                    "SELECT id FROM jobs WHERE status='queued' ORDER BY created_at"
+                )
+            ]
+
+    def finish_job(self, job_id: str, status: str, error: str | None = None) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE jobs SET status=?,error=?,updated_at=? WHERE id=?",
+                (status, error, now_iso(), job_id),
+            )
+
+    def retry_job(self, job_id: str) -> bool:
+        with self.connect() as connection:
+            return bool(
+                connection.execute(
+                    "UPDATE jobs SET status='queued',error=NULL,updated_at=? "
+                    "WHERE id=? AND status IN ('failed','interrupted')",
+                    (now_iso(), job_id),
+                ).rowcount
+            )
+
+    def recover_jobs(self) -> None:
+        # Single-process worker. A completed result wins over stale job status.
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE jobs SET status=COALESCE((SELECT status FROM runs "
+                "WHERE runs.id=jobs.run_id AND result_json IS NOT NULL),'interrupted'),"
+                "error='服务重启；可使用原始输入重新运行',updated_at=? WHERE status='running'",
+                (now_iso(),),
+            )
+            connection.execute("UPDATE jobs SET error=NULL WHERE status IN ('completed','blocked')")
+            connection.execute(
+                "UPDATE runs SET status='failed',completed_at=? WHERE result_json IS NULL "
+                "AND id IN (SELECT run_id FROM jobs WHERE status='interrupted')",
+                (now_iso(),),
+            )
+
+    def mark_run_failed(self, run_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE runs SET status='failed',completed_at=? WHERE id=? AND result_json IS NULL",
+                (now_iso(), run_id),
+            )
+
+    def save_report(self, report_id: str, kind: str, payload: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO reports VALUES (?,?,?,?)",
+                (report_id, kind, json.dumps(payload, ensure_ascii=False), now_iso()),
+            )
+
+    def reports(self, kind: str) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM reports WHERE kind=? ORDER BY created_at DESC LIMIT 20", (kind,)
+            ).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+    def memory_inventory(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM (SELECT m.*,
+                MAX(COALESCE(f.active,1)) OVER (
+                  PARTITION BY m.namespace,m.kind,m.content) AS active,
+                COUNT(*) OVER (PARTITION BY m.namespace,m.kind,m.content) AS duplicate_count,
+                ROW_NUMBER() OVER (PARTITION BY m.namespace,m.kind,m.content
+                  ORDER BY m.created_at DESC,m.id) AS duplicate_rank
+                FROM memories m LEFT JOIN memory_flags f ON m.id=f.memory_id)
+                WHERE duplicate_rank=1 ORDER BY created_at DESC LIMIT 100"""
+            ).fetchall()
+        return [{**dict(row), "metadata": json.loads(row["metadata_json"])} for row in rows]
+
+    def set_memory_active(self, memory_id: str, active: bool) -> None:
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM memories WHERE id=?", (memory_id,)).fetchone():
+                raise KeyError(memory_id)
+            connection.execute(
+                "INSERT INTO memory_flags SELECT id,? FROM memories WHERE "
+                "(namespace,kind,content)=(SELECT namespace,kind,content FROM memories WHERE id=?) "
+                "ON CONFLICT(memory_id) DO UPDATE SET active=excluded.active",
+                (int(active), memory_id),
+            )
+
+    def review_for(self, run_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM reviews WHERE run_id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def save_final_memories(self, run_id: str, result: dict) -> None:
+        """Result and generated memories commit together, so failed attempts cannot teach."""
+        with self.connect() as connection:
+            for memory in result["memory_updates"]:
+                previous = connection.execute(
+                    "SELECT MAX(COALESCE(f.active,1)) FROM memories m LEFT JOIN memory_flags f "
+                    "ON m.id=f.memory_id WHERE namespace=? AND kind=? AND content=?",
+                    (memory["namespace"], memory["kind"], memory["content"]),
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                    (
+                        memory["id"],
+                        memory["namespace"],
+                        memory["kind"],
+                        memory["content"],
+                        memory["importance"],
+                        json.dumps(memory["metadata"], ensure_ascii=False),
+                        memory["created_at"],
+                        now_iso(),
+                    ),
+                )
+                if previous == 0:
+                    connection.execute(
+                        "INSERT INTO memory_flags VALUES (?,0) ON CONFLICT(memory_id) DO NOTHING",
+                        (memory["id"],),
+                    )
+            execution = result.get("execution") or {}
+            connection.execute(
+                "UPDATE runs SET status=?,completed_at=?,result_json=?,compliance_status=?,"
+                "variant=?,conversion_rate=? WHERE id=?",
+                (
+                    result["status"],
+                    result["completed_at"],
+                    json.dumps(result, ensure_ascii=False),
+                    result["compliance"]["status"],
+                    execution.get("variant"),
+                    execution.get("conversion_rate", 0),
+                    run_id,
+                ),
+            )

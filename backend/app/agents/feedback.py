@@ -19,8 +19,6 @@ class FeedbackAgent:
         product: Product,
         execution: ExecutionResult,
     ) -> list[MemoryItem]:
-        converted = execution.conversion_rate >= 0.025
-        self.bandit.record(execution.variant, converted)
         episodic = self.memory.remember(
             namespace=segment.id,
             kind="episodic",
@@ -29,7 +27,8 @@ class FeedbackAgent:
                 f"打开率 {execution.open_rate:.1%}，转化率 {execution.conversion_rate:.1%}。"
             ),
             importance=0.78,
-            metadata={"run_id": run_id, "variant": execution.variant},
+            metadata={"run_id": run_id, "variant": execution.variant, "origin": "simulation"},
+            persist=False,
         )
         semantic = self.memory.remember(
             namespace=segment.id,
@@ -39,13 +38,15 @@ class FeedbackAgent:
                 f"{product.risks[0]}并强调持有期限。"
             ),
             importance=0.68,
-            metadata={"product_id": product.id},
+            metadata={"product_id": product.id, "origin": "catalog-rule"},
+            persist=False,
         )
         procedural = self.memory.remember(
             namespace="global",
             kind="procedural",
             content="生成金融营销内容时，先做适当性匹配，再生成内容，最后执行合规闸门。",
             importance=0.95,
-            metadata={"source": "feedback-loop", "run_id": run_id},
+            metadata={"source": "fixed-policy", "origin": "policy"},
+            persist=False,
         )
         return [episodic, semantic, procedural]

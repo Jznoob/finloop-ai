@@ -20,63 +20,78 @@ class ContextSection:
 
 
 class ContextBuilder:
-    """Budget-aware context packing with deterministic PII minimization."""
+    """Hard budget in estimator units, including section headers and separators."""
 
     def __init__(self, token_budget: int = 1800) -> None:
+        if token_budget < 1:
+            raise ValueError("Context budget must be positive")
         self.token_budget = token_budget
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        han_count = sum("\u4e00" <= char <= "\u9fff" for char in text)
-        other_count = len(text) - han_count
-        return max(1, han_count + other_count // 4)
+        han = sum("\u4e00" <= char <= "\u9fff" for char in text)
+        return han + (len(text) - han + 3) // 4
 
     @staticmethod
     def redact(text: str) -> tuple[str, int]:
-        redactions = 0
+        total = 0
         for pattern, replacement in (
+            (IDENTITY, "[ID_REDACTED]"),
             (PHONE, "[PHONE_REDACTED]"),
             (EMAIL, "[EMAIL_REDACTED]"),
-            (IDENTITY, "[ID_REDACTED]"),
         ):
             text, count = pattern.subn(replacement, text)
-            redactions += count
-        return text, redactions
+            total += count
+        return text, total
 
     def build(self, sections: list[ContextSection]) -> tuple[str, ContextTrace]:
-        ordered = sorted(sections, key=lambda section: (not section.required, -section.priority))
-        remaining = self.token_budget
-        included: list[str] = []
-        dropped: list[str] = []
+        ordered = sorted(sections, key=lambda s: (not s.required, -s.priority))
         rendered: list[str] = []
-        redaction_count = 0
-
+        included, dropped = [], []
+        redactions = 0
         for section in ordered:
-            content, section_redactions = self.redact(section.content)
-            redaction_count += section_redactions
-            cap = min(section.token_cap or remaining, remaining)
-            cost = self.estimate_tokens(content)
-            if cost > cap:
-                if section.required and cap > 30:
-                    ratio = cap / cost
-                    content = content[: max(80, int(len(content) * ratio))] + "…"
-                    cost = self.estimate_tokens(content)
-                else:
+            content, count = self.redact(section.content)
+            redactions += count
+            prefix = "\n\n".join(rendered)
+            separator = "\n\n" if prefix else ""
+            header = f"## {section.name}\n"
+            cap = section.token_cap or self.token_budget
+
+            def fits(
+                value: str,
+                header: str = header,
+                cap: int = cap,
+                prefix: str = prefix,
+                separator: str = separator,
+            ) -> bool:
+                return (
+                    self.estimate_tokens(header + value) <= cap
+                    and self.estimate_tokens(prefix + separator + header + value)
+                    <= self.token_budget
+                )
+
+            if not fits(content):
+                if not section.required:
                     dropped.append(section.name)
                     continue
-            if cost > remaining:
-                dropped.append(section.name)
-                continue
-            rendered.append(f"## {section.name}\n{content}")
+                low, high = 0, len(content)
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if fits(content[:mid] + "…"):
+                        low = mid
+                    else:
+                        high = mid - 1
+                if low == 0:
+                    dropped.append(section.name)
+                    continue
+                content = content[:low] + "…"
+            rendered.append(header + content)
             included.append(section.name)
-            remaining -= cost
-
         prompt = "\n\n".join(rendered)
-        trace = ContextTrace(
+        return prompt, ContextTrace(
             budget=self.token_budget,
             estimated_tokens=self.estimate_tokens(prompt),
             included_sections=included,
             dropped_sections=dropped,
-            redactions=redaction_count,
+            redactions=redactions,
         )
-        return prompt, trace

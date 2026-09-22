@@ -1,263 +1,196 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "./components/Icon";
 import { api } from "./lib/api";
-import { formatDuration, formatPercent, shortId } from "./lib/format";
-import type { Dashboard, RunResult } from "./types";
+import { formatPercent, shortId } from "./lib/format";
+import { StudioPages } from "./components/StudioPages";
+import { RunDetail } from "./components/RunDetail";
+import type { Dashboard, Job, RunResult } from "./types";
 
-const fallbackMetrics = {
-  total_runs: 0,
-  compliance_rate: 1,
-  average_conversion_rate: 0,
-  feedback_count: 0,
-  average_rating: 0,
-  memory_count: 0,
-  bandit_arms: [],
+export type Page = "overview" | "lab" | "knowledge" | "memory" | "evals" | "history" | "settings";
+const navigation = [
+  { id: "overview", label: "运行工作台", icon: "grid", description: "从目标到可复查的决策" },
+  { id: "lab", label: "策略实验室", icon: "spark", description: "固定样本，检验策略对假设的敏感性" },
+  { id: "knowledge", label: "证据知识库", icon: "book", description: "检索原文，检查引用与版本" },
+  { id: "memory", label: "记忆管理", icon: "memory", description: "检查来源，管理后续任务可召回的记忆" },
+  { id: "evals", label: "质量评测", icon: "shield", description: "独立环境中的检索、拒答与流程回归" },
+  { id: "history", label: "运行历史", icon: "clock", description: "找回每次任务，导出证据或重新尝试" },
+  { id: "settings", label: "运行配置", icon: "settings", description: "查看当前能力、模型连接与运行边界" },
+] as const;
+const stageNames = ["洞察", "知识", "决策", "内容", "合规", "执行", "反馈"];
+const stages = ["insight", "retrieve", "decide", "compose", "guard", "execute", "learn"];
+const initialRequest: RunResult["request"] = {
+  segment_id: "steady-planner", objective: "在市场波动加剧时，为稳健客户提供有依据的资产配置教育",
+  market_signal: "权益市场近五日波动显著放大，客户对回撤的咨询增加",
+  dry_run: true, seed: 42, variant: "auto",
 };
-
-const navItems = [
-  { icon: "grid" as const, label: "运行总览", active: true },
-  { icon: "flow" as const, label: "智能体图谱" },
-  { icon: "book" as const, label: "营销知识库" },
-  { icon: "pulse" as const, label: "评测中心" },
+const presets = [
+  {label: "波动应对", segment: "steady-planner", objective: initialRequest.objective, signal: initialRequest.market_signal},
+  {label: "沉默激活", segment: "growth-explorer", objective: "对沉默客群开展低负担教育触达", signal: "近期打开率下降，需要评估触达疲劳与渠道偏好"},
+  {label: "多资产教育", segment: "pro-allocator", objective: "帮助专业客户理解多资产组合风险", signal: "股债相关性阶段性变化，海外市场波动上升"},
 ];
 
-function App() {
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
-  const [activeRun, setActiveRun] = useState<RunResult | null>(null);
-  const [segmentId, setSegmentId] = useState("steady-planner");
-  const [objective, setObjective] = useState("在市场波动加剧时，为稳健客户提供有依据的资产配置教育");
-  const [signal, setSignal] = useState("权益市场近五日波动显著放大，客户对回撤的咨询增加");
-  const [tab, setTab] = useState<"overview" | "trace" | "memory">("overview");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+function pageFromHash(): Page {
+  const value = location.hash.slice(1);
+  return navigation.some((item) => item.id === value) ? value as Page : "overview";
+}
 
-  async function loadDashboard() {
+export default function App() {
+  const [page, setPage] = useState<Page>(pageFromHash);
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [run, setRun] = useState<RunResult | null>(null);
+  const [job, setJob] = useState<Job | null>(null);
+  const [request, setRequest] = useState(initialRequest);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [pollRevision, setPollRevision] = useState(0);
+  const [provider, setProvider] = useState("正在连接…");
+  const [ready, setReady] = useState(false);
+  const submission = useRef<{payload: string; key: string} | null>(null);
+  const submittingRef = useRef(false);
+  const busy = submitting || job?.status === "queued" || job?.status === "running";
+  const selected = navigation.find((item) => item.id === page)!;
+
+  function navigate(next: Page) { location.hash = next; setPage(next); window.scrollTo(0, 0); }
+  async function refresh() {
     const data = await api.dashboard();
     setDashboard(data);
-    setActiveRun((current) => current ?? data.recent_runs[0] ?? null);
+    setRun((current) => current ?? data.recent_runs[0] ?? null);
   }
-
   useEffect(() => {
-    loadDashboard().catch((reason: Error) => setError(reason.message));
+    let stopped = false;
+    let retryTimer: number;
+    const onHash = () => {setPage(pageFromHash()); window.scrollTo(0, 0);};
+    window.addEventListener("hashchange", onHash);
+    async function connect() {
+      try {
+        const [data, jobs, config] = await Promise.all([api.dashboard(), api.jobs(), api.configuration()]);
+        if (stopped) return;
+        setDashboard(data); setRun(data.recent_runs[0] ?? null);
+        setProvider(String(config.provider)); setReady(true); setError("");
+        setJob(jobs.find((item) => ["queued", "running"].includes(item.status)) ?? null);
+      } catch {
+        if (stopped) return;
+        setProvider("等待服务连接");
+        setError("暂时无法连接本地服务，正在自动重连。已保存的任务不会丢失。");
+        retryTimer = window.setTimeout(connect, 3000);
+      }
+    }
+    void connect();
+    return () => {stopped = true; window.clearTimeout(retryTimer); window.removeEventListener("hashchange", onHash);};
   }, []);
 
-  async function runWorkflow() {
-    setLoading(true);
-    setError("");
-    try {
-      const run = await api.run({ segment_id: segmentId, objective, market_signal: signal });
-      setActiveRun(run);
-      setTab("overview");
-      await loadDashboard();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "运行失败");
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!job) return;
+    let stopped = false;
+    let timer: number;
+    const poll = async () => {
+      try {
+        const status = await api.job(job.id);
+        if (stopped) return;
+        if (["completed", "blocked"].includes(status.status) && status.run_id) {
+          const result = await api.getRun(status.run_id);
+          if (stopped) return;
+          const data = await api.dashboard();
+          if (!stopped) { setRun(result); setDashboard(data); setJob(status); setError(""); }
+          return;
+        }
+        setJob(status);
+        if (["failed", "interrupted"].includes(status.status)) {
+          setError(status.error ?? "任务失败，可在运行历史中重试"); return;
+        }
+        setError("");
+      } catch {
+        if (!stopped) setError("连接暂时中断，正在重新连接；任务已保存在服务端。");
+      }
+      if (!stopped) timer = window.setTimeout(poll, 800);
+    };
+    timer = window.setTimeout(poll, 150);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [job?.id, pollRevision]);
+
+  async function submit() {
+    if (busy || submittingRef.current) return;
+    submittingRef.current = true; setSubmitting(true); setError("");
+    const payload = JSON.stringify(request);
+    if (submission.current?.payload !== payload) {
+      submission.current = {payload, key: crypto.randomUUID()};
     }
+    try {
+      setJob(await api.submit(request, submission.current.key));
+      submission.current = null;
+    } catch (reason) { setError(message(reason)); }
+    finally { setSubmitting(false); submittingRef.current = false; }
   }
 
-  const metrics = dashboard?.metrics ?? fallbackMetrics;
-  const product = activeRun?.selected_product;
-  const execution = activeRun?.execution;
-  const content = activeRun?.compliance.final_copy ?? "";
-  const strategy = activeRun?.artifacts.find((artifact) => artifact.agent === "strategy-agent");
-  const stageState = useMemo(() => {
-    const state: Record<string, string> = {};
-    activeRun?.events.forEach((event) => {
-      if (event.status !== "started") state[event.stage] = event.status;
-    });
-    return state;
-  }, [activeRun]);
-
-  async function copyContent() {
-    await navigator.clipboard.writeText(content);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+  async function openRun(id: string) {
+    try { setRun(await api.getRun(id)); navigate("overview"); }
+    catch (reason) { setError(message(reason)); }
   }
+  async function retry(id: string) {
+    try { setJob(await api.retry(id)); setPollRevision((value) => value + 1); setError(""); navigate("overview"); }
+    catch (reason) { setError(message(reason)); }
+  }
+  const events = busy ? job?.events ?? [] : run?.events ?? [];
+  const metrics = dashboard?.metrics;
 
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark"><span /><span /><span /></div>
-          <div><strong>FinLoop</strong><small>Growth Intelligence</small></div>
-        </div>
-        <nav className="nav-list">
-          <p className="nav-kicker">工作空间</p>
-          {navItems.map((item) => (
-            <button className={`nav-item ${item.active ? "active" : ""}`} key={item.label}>
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-              {item.active && <i />}
-            </button>
-          ))}
-          <p className="nav-kicker secondary">系统</p>
-          <button className="nav-item"><Icon name="settings" /><span>运行配置</span></button>
-        </nav>
-        <div className="runtime-card">
-          <div className="runtime-head"><span className="status-dot" />运行环境</div>
-          <strong>离线安全模式</strong>
-          <p>所有渠道执行均为仿真</p>
-          <div className="runtime-meta"><span>Model</span><b>{activeRun?.model_provider ?? "deterministic/local"}</b></div>
-        </div>
-        <div className="sidebar-user">
-          <div className="avatar">FL</div>
-          <div><strong>项目演示空间</strong><small>杭州 · Sandbox</small></div>
-          <span>···</span>
-        </div>
-      </aside>
-
-      <main className="main">
-        <header className="topbar">
-          <div>
-            <div className="eyebrow"><span /> LIVE WORKSPACE</div>
-            <h1>智能营销运行台</h1>
-          </div>
-          <div className="top-actions">
-            <div className="audit-pill"><Icon name="shield" /><span>合规闸门</span><b>ON</b></div>
-            <button className="primary-button compact" onClick={runWorkflow} disabled={loading}>
-              <Icon name={loading ? "pulse" : "play"} />{loading ? "智能体协作中…" : "新建运行"}
-            </button>
-          </div>
-        </header>
-
-        {error && <div className="error-banner">{error}</div>}
-
-        <section className="metric-grid">
-          <Metric label="闭环运行" value={String(metrics.total_runs).padStart(2, "0")} meta="全部轨迹可复现" tone="mint" />
-          <Metric label="合规通过率" value={formatPercent(metrics.compliance_rate, 0)} meta="独立规则闸门" tone="blue" />
-          <Metric label="平均转化率" value={execution ? formatPercent(execution.conversion_rate) : formatPercent(metrics.average_conversion_rate)} meta={execution ? `本轮 ${execution.converted} 个转化` : "等待首轮反馈"} tone="amber" />
-          <Metric label="长期记忆" value={String(metrics.memory_count)} meta="情景 · 语义 · 流程" tone="violet" />
+  return <div className="app-shell studio">
+    <aside className="sidebar">
+      <div className="brand"><div className="brand-mark"><span/><span/><span/></div><div><strong>FinLoop</strong><small>Decision Studio / 02</small></div></div>
+      <nav aria-label="主导航" className="nav-list">
+        <p className="nav-kicker">工作空间</p>
+        {navigation.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`}
+          title={item.label} aria-label={item.label} aria-current={page === item.id ? "page" : undefined}
+          onClick={() => navigate(item.id)}><Icon name={item.icon}/><span>{item.label}</span>{page === item.id && <i/>}</button>)}
+      </nav>
+      <div className="runtime-card"><div className="runtime-head"><span className="status-dot"/>本地研究空间</div>
+        <strong>{!ready ? "正在连接服务" : provider.startsWith("deterministic") ? "本地模板运行" : "模型连接模式"}</strong>
+        <p>模拟渠道 · 人工复核学习</p><div className="runtime-meta">{provider}</div></div>
+      <div className="sidebar-user"><div className="avatar">FL</div><div><strong>金融营销决策工作台</strong><small>Local workspace · v0.2</small></div></div>
+    </aside>
+    <main className="main">
+      <header className="topbar"><div><div className="eyebrow"><span/> FINLOOP / {page.toUpperCase()}</div><h1>{selected.label}</h1><p className="page-description">{selected.description}</p></div>
+        <div className="top-actions"><span className="mode-badge">模拟环境</span><a className="text-link" href="/docs" target="_blank" rel="noreferrer">API 文档 ↗</a></div></header>
+      {error && <div className="error-banner" role="alert">{error}<button aria-label="关闭提示" onClick={() => setError("")}>×</button></div>}
+      {page !== "overview" ? <StudioPages page={page} run={run} onOpenRun={openRun} onRetry={retry} onError={(error) => setError(message(error))}/>
+      : <>
+        <section className="metric-grid" aria-label="工作空间统计">
+          <Metric label="已完成运行" value={String(metrics?.total_runs ?? "—")} detail="来自持久化运行记录"/>
+          <Metric label="规则通过率" value={metrics?.total_runs ? formatPercent(metrics.compliance_rate, 0) : "—"} detail="含自动修订后通过"/>
+          <Metric label="人工复核" value={String(metrics?.feedback_count ?? "—")} detail="只有人工反馈更新策略权重"/>
+          <Metric label="长期记忆" value={String(metrics?.memory_count ?? "—")} detail="可查看来源、禁用与恢复"/>
         </section>
-
         <div className="workspace-grid">
           <section className="panel flow-panel">
-            <div className="panel-heading">
-              <div><div className="section-kicker">AGENT ORCHESTRATION</div><h2>闭环执行图</h2></div>
-              {activeRun ? (
-                <div className="run-identity"><span>{shortId(activeRun.run_id)}</span><b>{formatDuration(activeRun.created_at, activeRun.completed_at)}</b></div>
-              ) : <span className="muted">等待首次运行</span>}
-            </div>
-            <div className="pipeline">
-              {(dashboard?.pipeline ?? defaultPipeline).map((node, index) => {
-                const nodeState = stageState[node.id];
-                return (
-                  <div className="pipeline-wrap" key={node.id}>
-                    <div className={`pipeline-node ${nodeState ?? "idle"}`}>
-                      <div className="node-index">{nodeState ? <Icon name="check" /> : String(index + 1).padStart(2, "0")}</div>
-                      <strong>{node.name}</strong><small>{node.agent}</small>
-                    </div>
-                    {index < (dashboard?.pipeline ?? defaultPipeline).length - 1 && <div className={`pipeline-link ${nodeState ? "active" : ""}`}><span /></div>}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="flow-summary">
-              <div className="signal-orb"><Icon name="spark" /></div>
-              <div className="flow-summary-copy">
-                <span>当前策略判断</span>
-                <strong>{strategy?.summary ?? "选择客群和目标后启动一次完整闭环"}</strong>
-                <p>{activeRun ? activeRun.request.market_signal : "系统将并行分析市场信号与知识依据，再进入适当性和合规检查。"}</p>
-              </div>
-              {product && <div className="product-chip"><small>适配产品</small><b>{product.name}</b><span>R{product.risk_level} · {product.category}</span></div>}
-            </div>
+            <div className="panel-heading"><div><div className="section-kicker">DECISION WORKFLOW</div><h2>{busy ? "任务正在运行" : "决策全流程"}</h2></div><span className="mode-badge">{busy ? job?.status === "queued" ? "排队中" : "处理中" : run ? shortId(run.run_id) : "准备就绪"}</span></div>
+            <div className="pipeline">{stages.map((stage, index) => {
+              const state = [...events].reverse().find((event) => event.stage === stage)?.status;
+              return <div className="pipeline-wrap" key={stage}><div className={`pipeline-node ${state ?? "idle"}`}><div className="node-index">{state === "completed" || state === "revised" ? <Icon name="check"/> : index + 1}</div><strong>{stageNames[index]}</strong><small>{state === "started" ? "处理中" : state === "blocked" ? "已阻断" : state ? "已完成" : "等待"}</small></div>{index < 6 && <div className={`pipeline-link ${state ? "active" : ""}`}><span/></div>}</div>;
+            })}</div>
+            {busy ? <div className="progress-message" role="status"><span className="status-dot"/>{events.at(-1)?.message ?? "任务已持久化，正在分配执行资源…"}<small>可以切换页面；刷新后任务仍可找回。</small></div>
+            : run ? <div className="flow-summary"><div className="signal-orb"><Icon name="spark"/></div><div className="flow-summary-copy"><span>{run.segment.name} · C{run.segment.risk_level}</span><strong>{run.selected_product?.name} · R{run.selected_product?.risk_level}</strong><p>{run.request.objective}</p></div></div>
+            : <div className="workflow-empty"><h3>先定义目标，再检验证据</h3><p>从右侧选择一个场景。运行结束后，可以检查来源、比较策略并提交复核。</p></div>}
+            <div className="feature-links"><button onClick={() => navigate("lab")}><Icon name="spark"/><span>同样本策略对比<small>控制模拟噪声，展示不确定性</small></span>↗</button><button onClick={() => navigate("evals")}><Icon name="shield"/><span>隔离质量评测<small>包含拒答与风险倒挂负例</small></span>↗</button></div>
           </section>
-
-          <section className="panel control-panel">
-            <div className="panel-heading control-heading">
-              <div><div className="section-kicker">MISSION CONTROL</div><h2>发起营销任务</h2></div>
-              <span className="sandbox-tag">SANDBOX</span>
-            </div>
-            <label className="field-label">目标客群</label>
-            <div className="segment-options">
-              {(dashboard?.segments ?? []).map((segment) => (
-                <button key={segment.id} className={segmentId === segment.id ? "selected" : ""} onClick={() => setSegmentId(segment.id)}>
-                  <span>C{segment.risk_level}</span><div><strong>{segment.name}</strong><small>{segment.preferred_channel.toUpperCase()}</small></div>
-                </button>
-              ))}
-            </div>
-            <label className="field-label" htmlFor="objective">业务目标</label>
-            <textarea id="objective" value={objective} onChange={(event) => setObjective(event.target.value)} rows={3} />
-            <label className="field-label" htmlFor="signal">市场信号</label>
-            <textarea id="signal" value={signal} onChange={(event) => setSignal(event.target.value)} rows={3} />
-            <button className="primary-button full" onClick={runWorkflow} disabled={loading || !dashboard}>
-              <Icon name={loading ? "pulse" : "play"} />
-              {loading ? "正在协同 7 个智能体…" : "运行完整闭环"}
-              {!loading && <Icon name="arrow" />}
-            </button>
-            <p className="safe-note"><Icon name="shield" />不会向真实客户发送消息，执行结果由可复现模拟器生成。</p>
-          </section>
+          <form className="panel control-panel" onSubmit={(event) => {event.preventDefault(); void submit();}}>
+            <div className="panel-heading"><div><div className="section-kicker">NEW MISSION</div><h2>创建决策任务</h2></div></div>
+            <div className="preset-list">{presets.map((preset) => <button type="button" key={preset.label} disabled={busy} onClick={() => setRequest({...request, segment_id: preset.segment, objective: preset.objective, market_signal: preset.signal})}>{preset.label}</button>)}</div>
+            <label className="field-label" htmlFor="segment">目标客群</label><select id="segment" value={request.segment_id} disabled={busy} onChange={(event) => setRequest({...request, segment_id: event.target.value})}>{(dashboard?.segments ?? []).map((segment) => <option key={segment.id} value={segment.id}>{segment.name} · C{segment.risk_level} · {segment.preferred_channel.toUpperCase()}</option>)}</select>
+            <label className="field-label" htmlFor="objective">业务目标</label><textarea id="objective" required minLength={4} maxLength={300} rows={2} value={request.objective} disabled={busy} onChange={(event) => setRequest({...request, objective: event.target.value})}/>
+            <label className="field-label" htmlFor="signal">市场信号</label><textarea id="signal" required minLength={4} maxLength={500} rows={2} value={request.market_signal} disabled={busy} onChange={(event) => setRequest({...request, market_signal: event.target.value})}/>
+            <details className="advanced"><summary>实验参数</summary><div className="form-row"><label>创意策略<select value={request.variant} onChange={(event) => setRequest({...request, variant: event.target.value})}><option value="auto">由复核权重选择</option><option value="clarity">清晰解释</option><option value="evidence">证据优先</option><option value="scenario">情景分析</option></select></label><label>随机种子<input type="number" min="0" max="2147483647" required value={request.seed} onChange={(event) => setRequest({...request, seed: Number(event.target.value)})}/></label></div></details>
+            <button className="primary-button full" disabled={busy || !ready}><Icon name={busy ? "pulse" : "play"}/>{busy ? "任务处理中…" : "创建并运行"}<Icon name="arrow"/></button>
+            <p className="safe-note">渠道数据为模拟值；同样的种子与参数得到相同样本。</p>
+          </form>
         </div>
-
-        <section className="panel result-panel">
-          <div className="result-tabs">
-            <div>
-              <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>策略与内容</button>
-              <button className={tab === "trace" ? "active" : ""} onClick={() => setTab("trace")}>决策轨迹 <span>{activeRun?.events.length ?? 0}</span></button>
-              <button className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>记忆更新 <span>{activeRun?.memory_updates.length ?? 0}</span></button>
-            </div>
-            {activeRun && <span className={`result-status ${activeRun.compliance.status}`}><Icon name="shield" />{activeRun.compliance.status === "approved" ? "合规通过" : activeRun.compliance.status === "revised" ? "已修订通过" : "已阻断"} · {activeRun.compliance.score}</span>}
-          </div>
-
-          {!activeRun ? <EmptyState onRun={runWorkflow} /> : tab === "overview" ? (
-            <div className="result-grid">
-              <article className="content-preview">
-                <div className="card-title"><div><span>FINAL COPY</span><h3>渠道内容预览</h3></div><button onClick={copyContent}><Icon name={copied ? "check" : "copy"} />{copied ? "已复制" : "复制"}</button></div>
-                <div className="channel-line"><span>{activeRun.segment.preferred_channel.toUpperCase()}</span><i />面向 {activeRun.segment.name}</div>
-                <div className="copy-body">{content}</div>
-                <div className="copy-footer"><span>创意版本 · {execution?.variant ?? "—"}</span><span>{content.length} 字</span></div>
-              </article>
-              <div className="evidence-column">
-                <article className="compliance-card">
-                  <div className="card-title"><div><span>GUARDRAILS</span><h3>合规决策</h3></div><div className="score-ring">{activeRun.compliance.score}</div></div>
-                  <div className="check-list">
-                    {activeRun.compliance.checks.map((check) => <div key={check.rule}><span className={check.passed ? "pass" : "fail"}><Icon name={check.passed ? "check" : "shield"} /></span><p><strong>{check.rule}</strong><small>{check.detail}</small></p></div>)}
-                  </div>
-                </article>
-                <article className="citation-card">
-                  <div className="card-title"><div><span>EVIDENCE</span><h3>知识依据</h3></div><b>{activeRun.citations.length} sources</b></div>
-                  {activeRun.citations.slice(0, 3).map((citation) => <div className="citation" key={citation.document_id}><span>{citation.document_id}</span><div><strong>{citation.title}</strong><p>{citation.excerpt}</p></div><b>{formatPercent(citation.score, 0)}</b></div>)}
-                </article>
-              </div>
-            </div>
-          ) : tab === "trace" ? (
-            <EventTrace run={activeRun} />
-          ) : (
-            <MemoryView run={activeRun} />
-          )}
-        </section>
-        <footer><span>FinLoop AI · 所有产品、客群和执行数据均为虚构演示</span><span>Event-sourced · Auditable · Offline-first</span></footer>
-      </main>
-    </div>
-  );
+        {run ? <RunDetail key={run.run_id} run={run} onError={(error) => setError(message(error))} onReviewed={refresh}/>
+          : <section className="panel empty-state"><Icon name="flow"/><h3>{ready ? "工作空间已就绪" : "正在连接工作空间"}</h3><p>完成首次任务后，这里将展示内容、证据、执行漏斗与复核入口。</p></section>}
+      </>}
+      <footer><span>FinLoop AI · 虚构产品与匿名模拟客群</span><span>证据快照 / 可复现实验 / 人工复核</span></footer>
+    </main>
+  </div>;
 }
 
-const defaultPipeline = [
-  { id: "insight", name: "洞察", agent: "Insight Agent" },
-  { id: "retrieve", name: "知识", agent: "Knowledge Agent" },
-  { id: "decide", name: "决策", agent: "Strategy Agent" },
-  { id: "compose", name: "内容", agent: "Content Agent" },
-  { id: "guard", name: "合规", agent: "Compliance Agent" },
-  { id: "execute", name: "执行", agent: "Execution Agent" },
-  { id: "learn", name: "反馈", agent: "Feedback Agent" },
-];
-
-function Metric({ label, value, meta, tone }: { label: string; value: string; meta: string; tone: string }) {
-  return <article className={`metric-card ${tone}`}><div className="metric-top"><span>{label}</span><i /></div><strong>{value}</strong><p><span>↗</span>{meta}</p><div className="micro-chart"><i/><i/><i/><i/><i/><i/></div></article>;
+export function message(error: unknown) { return error instanceof Error ? error.message : "操作失败，请重试"; }
+function Metric({label, value, detail}: {label: string; value: string; detail: string}) {
+  return <article className="metric-card"><div className="metric-top">{label}</div><strong>{value}</strong><p>{detail}</p></article>;
 }
-
-function EmptyState({ onRun }: { onRun: () => void }) {
-  return <div className="empty-state"><div><Icon name="spark" /></div><h3>准备好运行第一个闭环</h3><p>系统将生成完整的决策轨迹、合规审查、仿真执行结果与可检索记忆。</p><button className="primary-button compact" onClick={onRun}><Icon name="play" />启动演示</button></div>;
-}
-
-function EventTrace({ run }: { run: RunResult }) {
-  return <div className="trace-view"><div className="trace-meta"><div><span>上下文预算</span><b>{run.context_trace.estimated_tokens} / {run.context_trace.budget} tokens</b></div><div><span>纳入区块</span><b>{run.context_trace.included_sections.length}</b></div><div><span>隐私脱敏</span><b>{run.context_trace.redactions}</b></div><div><span>状态</span><b>{run.status.toUpperCase()}</b></div></div><div className="timeline">{run.events.map((event) => <div className="timeline-row" key={event.sequence}><div className="timeline-seq">{String(event.sequence).padStart(2, "0")}</div><div className={`timeline-dot ${event.status}`} /><div className="timeline-body"><div><strong>{event.agent}</strong><span>{event.stage}</span><time>{new Date(event.timestamp).toLocaleTimeString("zh-CN", { hour12: false })}</time></div><p>{event.message}</p></div></div>)}</div></div>;
-}
-
-function MemoryView({ run }: { run: RunResult }) {
-  const labels: Record<string, { name: string; desc: string }> = { episodic: { name: "情景记忆", desc: "本次运行发生了什么" }, semantic: { name: "语义记忆", desc: "关于客群的新认知" }, procedural: { name: "流程记忆", desc: "以后应该如何决策" } };
-  return <div className="memory-view"><div className="memory-intro"><Icon name="memory" /><div><h3>反馈已经写回长期记忆</h3><p>下一次相似任务会按相关性、重要度和时间衰减召回，而不是塞入完整历史。</p></div></div><div className="memory-grid">{run.memory_updates.map((memory) => <article key={memory.id}><div><span>{labels[memory.kind]?.name ?? memory.kind}</span><b>{formatPercent(memory.importance, 0)} 重要度</b></div><h4>{labels[memory.kind]?.desc}</h4><p>{memory.content}</p><small>{memory.namespace} · {memory.id}</small></article>)}</div></div>;
-}
-
-export default App;

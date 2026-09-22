@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap");
-
 :root {
   font-family: "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
   color: #15201e;
@@ -13,6 +11,8 @@
   --mint-deep: #1b8d68;
   --panel: #fbfdfb;
 }
+
+/* v0.2: readable working surfaces, local fonts, functional responsive navigation. */
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: #f2f5f1; }
