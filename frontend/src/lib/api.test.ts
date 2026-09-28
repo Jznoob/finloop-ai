@@ -38,4 +38,19 @@ describe("API boundary", () => {
     await api.search("风险 & 来源");
     expect(fetch.mock.calls[0][0]).toBe(`/api/knowledge/search?q=${encodeURIComponent("风险 & 来源")}`);
   });
+
+  it("encodes both run ids for a read-only comparison", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({quality: {level: "strong"}})));
+    vi.stubGlobal("fetch", fetch);
+    await api.compareRuns("run/left", "run?right");
+    expect(fetch.mock.calls[0][0]).toBe("/api/runs/compare?left=run%2Fleft&right=run%3Fright");
+  });
+
+  it("uses an explicit POST before spending a model probe request", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({status: "local"})));
+    vi.stubGlobal("fetch", fetch);
+    await api.modelProbe();
+    expect(fetch.mock.calls[0][0]).toBe("/api/model/probe");
+    expect(fetch.mock.calls[0][1].method).toBe("POST");
+  });
 });

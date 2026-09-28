@@ -1,4 +1,4 @@
-import type { Dashboard, RunResult, Job, Document, Memory, Evaluation, Experiment, Report, Citation, Passport } from "../types";
+import type { Dashboard, RunResult, Job, Document, Memory, Evaluation, Experiment, Report, Citation, Passport, ModelProbe, RunComparison } from "../types";
 
 const API_ROOT = import.meta.env.VITE_API_ROOT ?? "/api";
 
@@ -35,6 +35,7 @@ export const api = {
     method: "PATCH", body: JSON.stringify({active}),
   }),
   configuration: () => request<Record<string, string | number | boolean>>("/configuration"),
+  modelProbe: () => request<ModelProbe>("/model/probe", {method: "POST"}),
   evaluate: () => request<Evaluation>("/evals/run", {method: "POST"}),
   evaluations: () => request<Report<Evaluation>[]>("/evals/reports"),
   experiment: (payload: Experiment["request"]) => request<Experiment>("/experiments", {
@@ -42,6 +43,9 @@ export const api = {
   }),
   experiments: () => request<Report<Experiment>[]>("/experiments"),
   evidence: (id: string) => request<Passport>(`/runs/${id}/evidence`),
+  compareRuns: (left: string, right: string) => request<RunComparison>(
+    `/runs/compare?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`,
+  ),
   review: (id: string) => request<{rating: number; note: string; endorsed: number} | null>(`/runs/${id}/review`),
   dashboard: () => request<Dashboard>("/dashboard"),
   run: (payload: { segment_id: string; objective: string; market_signal: string }) =>

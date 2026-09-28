@@ -271,10 +271,14 @@ class AgentRuntime:
             model_provider=self.model_gateway.provider_label,
             model_calls=CALL_TRACE.get() or [],
             evidence_passport={
-                "version": "2.0",
+                "version": "3.0",
                 "policy_version": "demo-policy-2",
                 "retrieval": "paragraph-bm25-v2",
                 "simulator": "paired-cohort-v1",
+                "prompt_versions": {
+                    "strategy": self.strategy_agent.prompt_version,
+                    "content": self.content_agent.prompt_version,
+                },
                 "seed": request.seed,
                 "context_sha256": hashlib.sha256(context.encode()).hexdigest(),
                 "input_sha256": hashlib.sha256(

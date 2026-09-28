@@ -109,7 +109,7 @@ export type Document = {
 export type Passport = {
   version: string; policy_version: string; retrieval: string; seed: number;
   context_sha256: string; input_sha256: string; sources: Document[]; memory_ids: string[];
-  boundaries: string;
+  boundaries: string; prompt_versions?: Record<string, string>;
   verification?: Array<{id: string; snapshot_integrity: boolean; current_matches: boolean}>;
 };
 export type Job = {
@@ -139,6 +139,33 @@ export type Experiment = {
   }>;
 };
 export type Report<T> = {id: string; kind: string; created_at: string; payload: T};
+
+export type ModelProbe = {
+  status: "ready" | "local" | "invalid-schema" | "unavailable";
+  provider: string; key_configured: boolean; remote_request_sent: boolean;
+  outcome: string; latency_ms: number; message: string; cost_notice: string;
+};
+
+export type RunComparison = {
+  left: {run_id: string; created_at: string; status: string};
+  right: {run_id: string; created_at: string; status: string};
+  quality: {level: "strong" | "partial" | "contextual"; label: string; detail: string};
+  dimensions: Array<{key: string; label: string; left: unknown; right: unknown; changed: boolean}>;
+  evidence: {
+    same: boolean;
+    added: Array<{id: string; title: string}>;
+    removed: Array<{id: string; title: string}>;
+    version_changed: Array<{id: string; title: string; left_hash: string; right_hash: string}>;
+    unchanged_ids: string[];
+  };
+  funnel: Array<{
+    key: string; label: string; left: number | null; right: number | null;
+    delta: number | null; unit: "count" | "rate";
+  }>;
+  content: {left_characters: number; right_characters: number; similarity: number; changed: boolean};
+  interpretation: string[];
+  boundaries: string;
+};
 
 export type Dashboard = {
   metrics: {

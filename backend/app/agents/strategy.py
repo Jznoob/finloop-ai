@@ -9,6 +9,7 @@ from app.services.scenarios import SCENARIOS, classify_scenario
 
 class StrategyAgent:
     name = "strategy-agent"
+    prompt_version = "strategy-json-v1"
 
     def __init__(self, bandit: BanditService, model_gateway: ModelGateway) -> None:
         self.bandit = bandit

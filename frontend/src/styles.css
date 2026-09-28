@@ -12,7 +12,7 @@
   --panel: #fbfdfb;
 }
 
-/* v0.2: readable working surfaces, local fonts, functional responsive navigation. */
+/* v0.3: readable working surfaces, decision diff, model diagnostics, responsive navigation. */
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: #f2f5f1; }

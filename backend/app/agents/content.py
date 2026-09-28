@@ -7,6 +7,7 @@ from app.services.scenarios import SCENARIOS, classify_scenario
 
 class ContentAgent:
     name = "content-agent"
+    prompt_version = "content-json-v1"
 
     def __init__(self, model_gateway: ModelGateway) -> None:
         self.model_gateway = model_gateway

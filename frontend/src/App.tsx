@@ -6,10 +6,11 @@ import { StudioPages } from "./components/StudioPages";
 import { RunDetail } from "./components/RunDetail";
 import type { Dashboard, Job, RunResult } from "./types";
 
-export type Page = "overview" | "lab" | "knowledge" | "memory" | "evals" | "history" | "settings";
+export type Page = "overview" | "lab" | "compare" | "knowledge" | "memory" | "evals" | "history" | "settings";
 const navigation = [
   { id: "overview", label: "运行工作台", icon: "grid", description: "从目标到可复查的决策" },
   { id: "lab", label: "策略实验室", icon: "spark", description: "固定样本，检验策略对假设的敏感性" },
+  { id: "compare", label: "决策对比", icon: "compare", description: "对齐输入、证据与版本，解释两次运行为何不同" },
   { id: "knowledge", label: "证据知识库", icon: "book", description: "检索原文，检查引用与版本" },
   { id: "memory", label: "记忆管理", icon: "memory", description: "检查来源，管理后续任务可召回的记忆" },
   { id: "evals", label: "质量评测", icon: "shield", description: "独立环境中的检索、拒答与流程回归" },
@@ -135,7 +136,7 @@ export default function App() {
 
   return <div className="app-shell studio">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><span/><span/><span/></div><div><strong>FinLoop</strong><small>Decision Studio / 02</small></div></div>
+      <div className="brand"><div className="brand-mark"><span/><span/><span/></div><div><strong>FinLoop</strong><small>Decision Studio / 03</small></div></div>
       <nav aria-label="主导航" className="nav-list">
         <p className="nav-kicker">工作空间</p>
         {navigation.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`}
@@ -145,7 +146,7 @@ export default function App() {
       <div className="runtime-card"><div className="runtime-head"><span className="status-dot"/>本地研究空间</div>
         <strong>{!ready ? "正在连接服务" : provider.startsWith("deterministic") ? "本地模板运行" : "模型连接模式"}</strong>
         <p>模拟渠道 · 人工复核学习</p><div className="runtime-meta">{provider}</div></div>
-      <div className="sidebar-user"><div className="avatar">FL</div><div><strong>金融营销决策工作台</strong><small>Local workspace · v0.2</small></div></div>
+      <div className="sidebar-user"><div className="avatar">FL</div><div><strong>金融营销决策工作台</strong><small>Local workspace · v0.3</small></div></div>
     </aside>
     <main className="main">
       <header className="topbar"><div><div className="eyebrow"><span/> FINLOOP / {page.toUpperCase()}</div><h1>{selected.label}</h1><p className="page-description">{selected.description}</p></div>
@@ -169,7 +170,7 @@ export default function App() {
             {busy ? <div className="progress-message" role="status"><span className="status-dot"/>{events.at(-1)?.message ?? "任务已持久化，正在分配执行资源…"}<small>可以切换页面；刷新后任务仍可找回。</small></div>
             : run ? <div className="flow-summary"><div className="signal-orb"><Icon name="spark"/></div><div className="flow-summary-copy"><span>{run.segment.name} · C{run.segment.risk_level}</span><strong>{run.selected_product?.name} · R{run.selected_product?.risk_level}</strong><p>{run.request.objective}</p></div></div>
             : <div className="workflow-empty"><h3>先定义目标，再检验证据</h3><p>从右侧选择一个场景。运行结束后，可以检查来源、比较策略并提交复核。</p></div>}
-            <div className="feature-links"><button onClick={() => navigate("lab")}><Icon name="spark"/><span>同样本策略对比<small>控制模拟噪声，展示不确定性</small></span>↗</button><button onClick={() => navigate("evals")}><Icon name="shield"/><span>隔离质量评测<small>包含拒答与风险倒挂负例</small></span>↗</button></div>
+            <div className="feature-links"><button onClick={() => navigate("lab")}><Icon name="spark"/><span>同样本策略对比<small>控制模拟噪声，展示不确定性</small></span>↗</button><button onClick={() => navigate("compare")}><Icon name="compare"/><span>决策差异复盘<small>对齐证据、版本和模型路径</small></span>↗</button><button onClick={() => navigate("evals")}><Icon name="shield"/><span>隔离质量评测<small>包含拒答与风险倒挂负例</small></span>↗</button></div>
           </section>
           <form className="panel control-panel" onSubmit={(event) => {event.preventDefault(); void submit();}}>
             <div className="panel-heading"><div><div className="section-kicker">NEW MISSION</div><h2>创建决策任务</h2></div></div>

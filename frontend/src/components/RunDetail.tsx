@@ -75,7 +75,7 @@ export function RunDetail({run, onError, onReviewed}: {run: RunResult; onError: 
     </div> : tab === "evidence" ? <div className="passport-view">
       <div className="section-intro"><h3>这次决策使用了哪些依据？</h3><p>保存运行时原文与 SHA-256 指纹。当前文档更新后，仍可查阅当时版本。</p></div>
       {!passport?.sources?.length ? <p className="empty-copy">此历史记录来自旧版本，未保存证据快照。新建任务即可生成。</p> : <>
-        <div className="passport-meta"><span>规则版本 <b>{passport.policy_version}</b></span><span>随机种子 <b>{passport.seed}</b></span><span>召回记忆 <b>{passport.memory_ids.length}</b></span></div>
+        <div className="passport-meta"><span>规则版本 <b>{passport.policy_version}</b></span><span>随机种子 <b>{passport.seed}</b></span><span>召回记忆 <b>{passport.memory_ids.length}</b></span><span>提示词版本 <b>{passport.prompt_versions ? Object.values(passport.prompt_versions).join(" / ") : "旧记录未保存"}</b></span></div>
         <div className="source-grid">{passport.sources.map((doc) => {
           const match = passport.verification?.find((item) => item.id === doc.id);
           const cite = run.citations.find((item) => item.document_id === doc.id);

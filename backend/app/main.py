@@ -29,7 +29,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="FinLoop AI API",
     description="Auditable multi-agent growth intelligence for financial services.",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 app.add_middleware(

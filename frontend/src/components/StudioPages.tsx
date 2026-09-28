@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Page } from "../App";
 import { api } from "../lib/api";
 import { formatPercent, shortId } from "../lib/format";
-import type { Citation, Document, Evaluation, Experiment, Job, Memory, Report, RunResult } from "../types";
+import type { Citation, Document, Evaluation, Experiment, Job, Memory, ModelProbe, Report, RunComparison, RunResult } from "../types";
 import { DocumentDialog } from "./RunDetail";
 
 type Props = {page: Page; run: RunResult | null; onOpenRun: (id: string) => void; onRetry: (id: string) => void; onError: (error: unknown) => void};
@@ -13,6 +13,7 @@ const date = (value: string) => new Date(value).toLocaleString("zh-CN", {hour12:
 export function StudioPages(props: Props) {
   switch (props.page) {
     case "lab": return <Laboratory {...props}/>;
+    case "compare": return <Comparison onError={props.onError}/>;
     case "knowledge": return <Knowledge onError={props.onError}/>;
     case "memory": return <Memories onError={props.onError}/>;
     case "evals": return <Evaluations onError={props.onError}/>;
@@ -21,6 +22,65 @@ export function StudioPages(props: Props) {
     default: return null;
   }
 }
+
+function Comparison({onError}: {onError: Props["onError"]}) {
+  const [runs, setRuns] = useState<RunResult[]>([]);
+  const [left, setLeft] = useState("");
+  const [right, setRight] = useState("");
+  const [result, setResult] = useState<RunComparison | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.runs().then((items) => {
+      setRuns(items);
+      setRight(items[0]?.run_id ?? "");
+      setLeft(items[1]?.run_id ?? "");
+    }).catch(onError);
+  }, []);
+  async function compare() {
+    setBusy(true);
+    try {setResult(await api.compareRuns(left, right));}
+    catch (error) {onError(error);} finally {setBusy(false);}
+  }
+  const runLabel = (item: RunResult) => `${shortId(item.run_id)} · ${item.segment.name} · ${item.execution?.variant ?? "blocked"}`;
+  return <div className="comparison-layout">
+    <form className="panel page-card compare-controls" onSubmit={(event) => {event.preventDefault(); void compare();}}>
+      <div className="section-kicker">DECISION DIFF</div><h2>两次决策，为什么不同？</h2>
+      <p className="subtle">先检查输入、种子、证据和版本是否可比，再观察策略、模型路径与模拟漏斗。分析只读，不修改运行或学习数据。</p>
+      <label className="field-label" htmlFor="left-run">基线运行</label>
+      <select id="left-run" required value={left} onChange={(event) => {setLeft(event.target.value); setResult(null);}}><option value="">请选择较早或基线运行</option>{runs.map((item) => <option key={item.run_id} value={item.run_id}>{runLabel(item)}</option>)}</select>
+      <label className="field-label" htmlFor="right-run">对照运行</label>
+      <select id="right-run" required value={right} onChange={(event) => {setRight(event.target.value); setResult(null);}}><option value="">请选择对照运行</option>{runs.map((item) => <option key={item.run_id} value={item.run_id}>{runLabel(item)}</option>)}</select>
+      <button className="primary-button full" disabled={busy || !left || !right || left === right}>{busy ? "正在分析…" : "分析决策差异 →"}</button>
+      {runs.length < 2 && <p className="method-note">至少需要两条已保存运行。可在工作台用相同输入和种子分别运行两种策略。</p>}
+      <p className="safe-note">“强可比”也只代表模拟口径对齐，不表示真实因果效果。</p>
+    </form>
+    <div className="compare-results">
+      {!result ? <section className="panel page-card empty-state"><IconCompare/><h3>先对齐条件，再解释差异</h3><p>推荐选择相同客群、目标、信号和种子，但采用不同创意策略的两条运行。</p></section> : <>
+        <section className={`panel page-card comparison-quality ${result.quality.level}`}>
+          <div><div className="section-kicker">COMPARABILITY</div><h2>{result.quality.label}</h2><p>{result.quality.detail}</p></div>
+          <div className="run-pair"><span>基线 <b>{shortId(result.left.run_id)}</b></span><i>→</i><span>对照 <b>{shortId(result.right.run_id)}</b></span></div>
+        </section>
+        <section className="panel page-card"><div className="section-intro"><h2>条件与执行路径</h2><p>发生变化的项目会高亮。旧记录没有提示词版本时会明确标记。</p></div>
+          <div className="dimension-list">{result.dimensions.map((row) => <div key={row.key} className={row.changed ? "changed" : ""}><strong>{row.label}</strong><span>{display(row.left)}</span><i>{row.changed ? "→" : "="}</i><span>{display(row.right)}</span></div>)}</div>
+        </section>
+        <section className="panel page-card"><div className="section-intro"><h2>证据版本差异</h2><p>{result.evidence.same ? `证据集合及版本一致，共 ${result.evidence.unchanged_ids.length} 篇。` : "证据集合或内容版本发生变化，需要作为混杂因素解释。"}</p></div>
+          <div className="evidence-diff-grid"><DiffGroup title="新增" items={result.evidence.added.map((item) => `${item.id} · ${item.title}`)}/><DiffGroup title="移除" items={result.evidence.removed.map((item) => `${item.id} · ${item.title}`)}/><DiffGroup title="版本变化" items={result.evidence.version_changed.map((item) => `${item.id} · ${item.title}`)}/><DiffGroup title="版本一致" items={result.evidence.unchanged_ids}/></div>
+        </section>
+        <section className="panel page-card"><div className="section-intro"><h2>模拟漏斗与内容变化</h2><p>差值按“对照 − 基线”计算；比例使用百分点展示。</p></div>
+          <div className="table-scroll"><table><thead><tr><th>指标</th><th>基线</th><th>对照</th><th>差值</th></tr></thead><tbody>{result.funnel.map((row) => <tr key={row.key}><td>{row.label}</td><td>{metricValue(row.left, row.unit)}</td><td>{metricValue(row.right, row.unit)}</td><td className={row.delta === 0 ? "" : "metric-delta"}>{metricDelta(row.delta, row.unit)}</td></tr>)}</tbody></table></div>
+          <div className="content-diff"><span>内容相似度 <b>{formatPercent(result.content.similarity, 1)}</b></span><span>基线字符 <b>{result.content.left_characters}</b></span><span>对照字符 <b>{result.content.right_characters}</b></span></div>
+        </section>
+        <section className="panel page-card comparison-notes"><h2>复盘结论</h2><ul>{result.interpretation.map((note) => <li key={note}>{note}</li>)}</ul><p className="method-note">{result.boundaries}</p></section>
+      </>}
+    </div>
+  </div>;
+}
+
+function display(value: unknown) {return value === null || value === undefined || value === "" ? "—" : String(value);}
+function metricValue(value: number | null, unit: "count" | "rate") {return value === null || value === undefined ? "—" : unit === "rate" ? formatPercent(value, 2) : value.toLocaleString();}
+function metricDelta(value: number | null, unit: "count" | "rate") {if (value === null || value === undefined) return "—"; const amount = unit === "rate" ? `${(value * 100).toFixed(2)} pp` : value.toLocaleString(); return `${value > 0 ? "+" : ""}${amount}`;}
+function DiffGroup({title, items}: {title: string; items: string[]}) {return <div><strong>{title}</strong>{items.length ? items.map((item) => <span key={item}>{item}</span>) : <small>无</small>}</div>;}
+function IconCompare() {return <div className="compare-mark"><span/><span/><i>↔</i></div>;}
 
 function Laboratory({run, onError}: Props) {
   const [runs, setRuns] = useState<RunResult[]>([]);
@@ -150,7 +210,18 @@ function History({onOpenRun, onRetry, onError}: Props) {
 
 function Configuration({onError}: {onError: Props["onError"]}) {
   const [config, setConfig] = useState<Record<string,string|number|boolean>>({});
+  const [probe, setProbe] = useState<ModelProbe | null>(null);
+  const [probing, setProbing] = useState(false);
   useEffect(() => {api.configuration().then(setConfig).catch(onError);}, []);
+  async function testModel() {
+    setProbing(true); setProbe(null);
+    try {setProbe(await api.modelProbe());} catch (error) {onError(error);} finally {setProbing(false);}
+  }
   const labels: Record<string,string> = {provider:"当前提供方",key_configured:"已配置服务端密钥",context_budget:"上下文估算预算",execution:"渠道执行",runtime:"执行器",retry:"失败恢复",retrieval:"检索方式",learning:"策略学习",token_estimator:"预算口径"};
-  return <section className="panel page-card"><div className="section-intro"><h2>当前运行能力</h2><p>这里展示服务端实际配置。模型密钥只在服务端环境文件中配置，不会返回浏览器。</p></div><dl className="config-list">{Object.entries(config).map(([key,value]) => <div key={key}><dt>{labels[key] ?? key}</dt><dd>{typeof value === "boolean" ? value ? "是" : "否" : String(value)}</dd></div>)}</dl><div className="method-note">本地模板模式可验证工作流、规则、存储与实验；真实模型的生成质量需要配置服务端接口后单独评估。</div><a className="secondary-button" href="/docs" target="_blank" rel="noreferrer">查看 API 接口 ↗</a></section>;
+  return <div className="settings-layout"><section className="panel page-card"><div className="section-intro"><h2>当前运行能力</h2><p>这里展示服务端实际配置。模型密钥只在服务端环境文件中配置，不会返回浏览器。</p></div><dl className="config-list">{Object.entries(config).map(([key,value]) => <div key={key}><dt>{labels[key] ?? key}</dt><dd>{typeof value === "boolean" ? value ? "是" : "否" : String(value)}</dd></div>)}</dl><div className="method-note">本地模板模式可验证工作流、规则、存储与实验；真实模型的生成质量需要配置服务端接口后单独评估。</div><a className="secondary-button" href="/docs" target="_blank" rel="noreferrer">查看 API 接口 ↗</a></section>
+    <section className="panel page-card model-diagnostic"><div className="section-kicker">MODEL READINESS</div><h2>模型连接诊断</h2><p className="subtle">显式发起一次最小结构化请求，检查地址、鉴权、模型名和 JSON 输出兼容性。不会保存模型响应或改动学习数据。</p>
+      <button className="primary-button full" disabled={probing} onClick={() => void testModel()}>{probing ? "正在诊断…" : "测试当前模型连接"}</button>
+      <p className="safe-note">远程模式下会产生一次小型模型调用，可能产生费用；本地模式不会访问网络。</p>
+      {probe && <div className={`probe-result ${probe.status}`}><div><span className="status-dot"/><strong>{probe.status === "ready" ? "远程模型可用" : probe.status === "local" ? "当前为本地模式" : probe.status === "invalid-schema" ? "结构不兼容" : "连接失败"}</strong></div><p>{probe.message}</p><dl><div><dt>提供方</dt><dd>{probe.provider}</dd></div><div><dt>调用结果</dt><dd>{probe.outcome}</dd></div><div><dt>耗时</dt><dd>{probe.latency_ms.toFixed(2)} ms</dd></div><div><dt>发送远程请求</dt><dd>{probe.remote_request_sent ? "是" : "否"}</dd></div></dl></div>}
+    </section></div>;
 }

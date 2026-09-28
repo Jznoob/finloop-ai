@@ -13,6 +13,7 @@ from app.core.jobs import JobManager
 from app.core.runtime import AgentRuntime
 from app.db import Database
 from app.models import RunRequest
+from app.services.comparison import compare_runs
 from app.services.experiments import ExperimentRequest, compare
 from app.services.retrieval import document_hash
 
@@ -143,5 +144,20 @@ def studio_router(database: Database, runtime: AgentRuntime, jobs: JobManager) -
                 "并非完整请求 token 数"
             ),
         }
+
+    @router.post("/model/probe")
+    async def model_probe():
+        return await runtime.model_gateway.probe()
+
+    @router.get("/runs/compare")
+    async def run_comparison(left: str, right: str):
+        if left == right:
+            raise HTTPException(422, "请选择两条不同的运行")
+        left_run, right_run = database.get_run(left), database.get_run(right)
+        if left_run is None or right_run is None:
+            raise HTTPException(404, "对比运行不存在")
+        if not left_run.get("result_json", True) or not right_run.get("result_json", True):
+            raise HTTPException(409, "只有已保存完整结果的运行可以比较")
+        return compare_runs(left_run, right_run)
 
     return router
